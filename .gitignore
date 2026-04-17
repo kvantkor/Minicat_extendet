@@ -1,0 +1,8 @@
+*.o
+*.elf
+*.iso
+*.bin
+*.BIN
+*.img
+iso_root/
+
