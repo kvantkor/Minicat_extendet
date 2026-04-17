@@ -11,6 +11,7 @@ ISO = my_os.iso
 ISO_DIR = iso_root
 MSG = "Update MiniCat OS: implementation of FAT32 ls, run and syscalls"
 GITHAB_OUT = /home/rootcat/Desktop/проекты_на_гитхаб/Minicat_extendet
+VER = 1.1.0
 
 # Флаги
 CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -fno-pie -fno-pic -nostdlib -g
@@ -23,7 +24,7 @@ OBJ = boot.o kernel.o vga.o keyboard.o pmm.o shell.o rtc.o ide.o fat32.o vmm.o c
 # Настройки QEMU для AMD V140 (Phenom наиболее близок по архитектуре)
 QEMU_FLAGS = -m 1G -cpu phenom -drive format=raw,file=disk.img -display sdl
 
-.PHONY: all clean run create_iso help git_upload app write_app
+.PHONY: all clean run create_iso help git_upload app write_app git_version
 
 # По умолчанию просто собираем ядро
 all: $(KERNEL)
@@ -36,7 +37,8 @@ help:
 	@echo "make create_iso - Собрать ISO и запустить его в QEMU"
 	@echo "make app        - Собрать приложение APP.BIN"
 	@echo "make write_app  - Записать приложение на disk.img"
-	@echo "make git_update - Очистить мусор и залить в GitHub"
+	@echo "make git_upload - Очистить мусор и залить в GitHub"
+	@echo "make git_version- Создание новой версии(перед нажатием нужно изменить версию!)"
 
 # Сборка ядра
 $(KERNEL): $(OBJ)
@@ -90,3 +92,9 @@ git_upload: clean
 	git add . && \
 	git commit -m $(MSG) && \
 	git push origin main
+
+git_version: clean
+	@echo "--- Создание тега версии v$(VER) ---"
+	cd $(GITHAB_OUT) && \
+	git tag -a v$(VER) -m "Release version $(VER): $(MSG)" && \
+	git push origin v$(VER)
