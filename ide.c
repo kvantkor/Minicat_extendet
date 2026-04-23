@@ -1,6 +1,9 @@
 #include "kernel.h"
 #include "ide.h"
 #include "vga.h"
+#include <stdint.h>
+
+volatile uint8_t ide_irq_fired = 0;
 
 // Порты контроллера IDE
 #define IDE_DATA        0x1F0
@@ -21,7 +24,7 @@ static void ide_delay() {
 int ide_wait_ready(uint8_t check_drq) {
     uint8_t status;
     while (1) {
-        status = inb(IDE_STATUS);
+        status = inb(0x3F6);
         if (status == 0xFF) return -1; // Контроллера нет
         if (status & 0x01)  return -2; // Ошибка диска (ERR)
         if (!(status & 0x80)) {        // BSY сброшен
@@ -32,38 +35,35 @@ int ide_wait_ready(uint8_t check_drq) {
 }
 
 void ide_read_sector(uint32_t lba, uint8_t* buffer) {
-	if (ide_wait_ready(0) < 0) return;
-	
-    // Выбор диска (Master) и установка старших 4 бит LBA
+    ide_wait_ready(0); // Ждем через 0x3F6 (исправь функцию выше)
+    ide_irq_fired = 0;
+
     outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
-    ide_delay();
-    
-    // Количество секторов (1)
     outb(IDE_SECTOR_CNT, 1);
-    
-    // Остальные биты LBA
     outb(IDE_LBA_LOW,  (uint8_t)lba);
     outb(IDE_LBA_MID,  (uint8_t)(lba >> 8));
     outb(IDE_LBA_HIGH, (uint8_t)(lba >> 16));
-    
-    // Команда чтения (0x20)
     outb(IDE_COMMAND, 0x20);
 
-    // Ждем, пока диск не сбросит бит BSY (Busy) и не поставит DRQ (Data Request)
-    while ((inb(IDE_STATUS) & 0x88) != 0x08);
+    // Даем диску миг, чтобы выставить BSY
+    ide_delay(); 
 
-    // Читаем 512 байт (256 слов по 16 бит)
+    // Ждем прерывания. Если за 2 млн циклов не пришло — проверяем DRQ вручную
+    int timeout = 2000000;
+    while (!ide_irq_fired && --timeout > 0) {
+        // Если диск вдруг сбросил BSY и поставил DRQ, а прерывания нет (глюк эмулятора)
+        if (!(inb(0x3F6) & 0x80) && (inb(0x3F6) & 0x08)) break; 
+    }
+
+    // В любом случае читаем статус один раз из 0x1F7, чтобы подтвердить IRQ
+    inb(0x1F7); 
+
+    // Читаем данные
     uint16_t* ptr = (uint16_t*)buffer;
-    for (int i = 0; i < 256; i++) {
-        ptr[i] = inw(IDE_DATA);
-    }
-    
-    ide_delay();
-    
-    uint8_t status = inb(IDE_STATUS);
-    if (status & 0x01) {
-        vga_puts("IDE Error: Read failed!\n");
-    }
+    for (int i = 0; i < 256; i++) ptr[i] = inw(IDE_DATA);
+
+    // Снова читаем статус для закрытия транзакции
+    inb(0x1F7);
 }
 
 void ide_write_sector(uint32_t lba, uint8_t* buffer) {

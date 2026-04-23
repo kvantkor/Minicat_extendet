@@ -35,7 +35,7 @@ void pmm_init(uint32_t mem_size) {
     total_blocks = mem_size / PAGE_SIZE;
     bitmap_size = total_blocks / 8;
     pmm_bitmap = (uint8_t*)&end;
-    uint32_t bitmap_pages = (bitmap_size / PAGE_SIZE) + 1;
+    //uint32_t bitmap_pages = (bitmap_size / PAGE_SIZE) + 1;
 
     // Сначала всё занято
     for (uint32_t i = 0; i < bitmap_size; i++) pmm_bitmap[i] = 0xFF;

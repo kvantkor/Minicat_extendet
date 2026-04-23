@@ -7,16 +7,31 @@
 #include <stdint.h>
 #include "vmm.h"
 #include "cpu_proc_list.h"
+#include "ide.h"
 
 extern uint32_t boot_magic;
 extern uint32_t boot_mboot_ptr;
 
 task_t *current_task = NULL;
 uint32_t next_pid = 0;
+task_t *dead_list = NULL;
 
+void kernel_cleaner_task();
 
 volatile char key_buffer = 0;
 volatile uint32_t syscall_waiting = 0;
+
+void ide_handler() {
+    // 1. Читаем статус, чтобы диск сбросил сигнал прерывания
+    inb(0x1F7); 
+    
+    // 2. Ставим флаг, чтобы функция чтения вышла из цикла
+    ide_irq_fired = 1;
+
+    // 3. Отправляем EOI контроллерам прерываний (обязательно!)
+    //outb(0xA0, 0x20); // Slave
+    //outb(0x20, 0x20); // Master
+}
 
 // Обработчик прерываний (вызывается из common_stub в boot.asm)
 uint32_t exception_handler(registers_t *regs) {
@@ -70,6 +85,16 @@ uint32_t exception_handler(registers_t *regs) {
             case 7:
 				regs->eax = fat32_write_file((char*)regs->ebx, (uint8_t*)regs->ecx, regs->edx);
 				break;
+				
+			case 10: {
+				resource_t *res = (resource_t*)kmalloc(sizeof(resource_t));
+				res->type = RES_VGA_SYMBOL;
+				res->addr = regs->ebx; // номер ячейки (76-79)
+				res->next = current_task->resources;
+				current_task->resources = res;
+			break;
+			}
+
             
             default:
                 vga_puts("Unknown syscall\n");
@@ -77,11 +102,35 @@ uint32_t exception_handler(registers_t *regs) {
         }
         return (uint32_t)regs;
     }
+    
+    if (regs->int_no == 46) {
+		// vga_puts("!!!!\n");
+		ide_handler();
+	}
+    
     // 2. Аппаратные прерывания (IRQ)
     else if (regs->int_no == 32) { // Таймер
 		if (current_task != NULL) {
 			/// сохранение текущего указателя стека
 			current_task->esp = (uint32_t)regs;
+			
+			task_t *prev = current_task;
+			task_t *next_t = current_task->next;
+
+			// Идем по кольцу и выкидываем "трупы"
+			while (next_t->stat == TASK_STATE_KILLED) {
+				prev->next = next_t->next; // Вышвыриваем из списка
+				
+				next_t->next = dead_list;
+				dead_list = next_t;
+				
+				// Если ты не используешь kfree, просто идем дальше
+				next_t = prev->next;
+
+				// Если вырезали всех и вернулись к себе — стоп
+				if (next_t == prev) break;
+			}
+			
 			//переключение на следующий процесс
 			current_task = current_task->next;
 			//обновление cr3 для vmm
@@ -91,7 +140,8 @@ uint32_t exception_handler(registers_t *regs) {
 			//возвращение стека новой задачи
 			return current_task->esp;
 		}
-    } else if (regs->int_no == 33) { // Клавиатура
+    }
+    else if (regs->int_no == 33) { // Клавиатура
 	    uint8_t scancode = inb(0x60);
     
 		// Прямая отладка на экране (как ты хотел)
@@ -118,7 +168,7 @@ uint32_t exception_handler(registers_t *regs) {
 void task2_test() {
     uint16_t *vga_mem = (uint16_t*)0xB8000;
     uint8_t counter = 0;
-    const char *anim = "|/-\\"; // Маленькая анимация загрузки
+    const char *anim = "|/-\\O"; // Маленькая анимация загрузки
     
     while(1) {
         // Рисуем в самом углу (строка 0, колонка 79)
@@ -127,6 +177,93 @@ void task2_test() {
         
         // Небольшая задержка, чтобы анимация не летела слишком быстро
         for(volatile int i = 0; i < 1000000; i++); 
+    }
+}
+
+void task_a () {
+	uint16_t *vga_mem = (uint16_t*)0xB8000;
+    uint8_t counter = 0;
+    const char *anim = "CRCV"; // Маленькая анимация загрузки
+    const char *anim2 = "AUAA";
+    const char *anim3 = "TNTU";
+    
+    while(1) {
+        // Рисуем в самом углу (строка 0, колонка 79)
+        vga_mem[76] = (uint16_t)(anim[counter % 4] | (0x0F << 8));
+        vga_mem[77] = (uint16_t)(anim2[counter % 4] | (0x0F << 8));
+        vga_mem[78] = (uint16_t)(anim3[counter % 4] | (0x0F << 8));
+        counter++;
+        
+        // Небольшая задержка, чтобы анимация не летела слишком быстро
+        for(volatile int i = 0; i < 10000000; i++); 
+    }
+}
+
+task_t* find_task(uint32_t pid) {
+    task_t *it = current_task;
+    if (it == NULL) return NULL;
+
+    do {
+        if (it->id == pid) return it; // Нашли!
+        it = it->next;
+    } while (it != current_task); // Крутимся, пока не вернемся в начало
+
+    return NULL; // Никого не нашли
+}
+
+void task_cleanup(task_t *t) {
+    if (t == NULL) return;
+
+    // 1. Очистка ресурсов (VGA символы)
+    resource_t *res = t->resources;
+    
+    // ОГРАНИЧЕНИЕ: Если в res мусор, этот цикл улетит в бесконечность или вызовет Fault.
+    // Пока у нас нет стабильной регистрации, можно временно обернуть в проверку:
+    while (res != NULL) {
+        // vga_put_hex((uint32_t)res); // Раскомментируй для отладки, если хочешь видеть адреса
+        
+        if (res->type == RES_VGA_SYMBOL) {
+            uint16_t *vga_mem = (uint16_t*)0xB8000;
+            // Защита: не пишем за пределы VGA буфера (80*25 = 2000 слов)
+            if (res->addr < 2000) {
+                vga_mem[res->addr] = 0x0720; 
+            }
+        }
+        
+        resource_t *next_res = res->next;
+        // kfree(res); // Раскомментируй, когда будет мелкий kfree для структур
+        res = next_res;
+    }
+
+    // 2. Освобождение стека
+    // ВНИМАНИЕ: проверь правильное имя поля (stack_base)
+    if (t->steck_base != 0) { 
+        kfree_page((void*)t->steck_base); 
+        vga_puts("[Reaper] Stack memory freed for PID: ");
+        vga_put_int(t->id);
+        vga_puts("\n");
+    }
+}
+
+// 2. Потом сам Жнец (Cleaner)
+void kernel_cleaner_task() {
+    while(1) {
+        if (dead_list != NULL) {
+            // Чтобы не было проблем с прерываниями, на миг запрещаем их
+            asm volatile("cli");
+            task_t *victim = dead_list;
+            dead_list = victim->next;
+            asm volatile("sti");
+
+            task_cleanup(victim);
+            
+            // kfree(victim); // Окончательное удаление структуры из памяти
+            vga_puts("[Reaper] Cleaned up PID: ");
+            vga_put_int(victim->id);
+            vga_puts("\n");
+        }
+        // Пауза, чтобы не грузить ядро
+        for(volatile int i = 0; i < 100000; i++);
     }
 }
 
@@ -164,14 +301,19 @@ void kernel_main() {
     current_task = (task_t*)kmalloc(sizeof(task_t));
     current_task->id = next_pid++;
     current_task->page_directory = vmm_get_directory();
+    current_task->resources = NULL;   // Чтобы Жнец не пошел по мусору
+    current_task->steck_base = 0;    // У ядра стек статический, его нельзя удалять через kfree_page
+    current_task->stat = 0;          // Состояние RUNNING
     // Заполним имя для порядка
     current_task->name[0] = 'k'; current_task->name[1] = 'e'; current_task->name[2] = 'r';
     current_task->name[3] = 'n'; current_task->name[4] = 'e'; current_task->name[5] = 'l';
     current_task->name[6] = '\0';
     current_task->next = current_task; 
 
-    // Создаем вторую задачу
-    create_task(task2_test, current_task->page_directory, "task2");
+    // Создаем задачи
+    create_task(task2_test, current_task->page_directory, "Status_os_bar");
+    create_task(task_a, current_task->page_directory, "run_CAT");
+	create_task(kernel_cleaner_task, current_task->page_directory, "cleaner");
 
     uint32_t cr0_val;
 	asm volatile("mov %%cr0, %0" : "=r"(cr0_val));
@@ -189,6 +331,7 @@ void kernel_main() {
     
     fat32_init();
     shell_init();
+    asm volatile("sti");
 
     // 5. Основной цикл (ждем прерываний)
     while (1) {
@@ -196,6 +339,16 @@ void kernel_main() {
     }
 }
 
-/*
-Это отличная точка для завершения этапа. Мы подняли MiniCat OS до уровня «тяжеловеса»: 100 ГБ диск подключен, ядро видит ФС, а драйверы IDE и памяти стабильно работают. Проблема со сдвигом данных на «гиганте» — это классическая задача по отладке геометрии диска, которую мы решим в следующий раз.Ниже подготовлен структурированный Промт-контейнер. Просто скопируй его и вставь в новое окно чата, когда будешь готов продолжать. Он содержит весь контекст проекта, текущий статус и технические детали.Промт для продолжения разработки MiniCat OSРоль: Ты — опытный системный разработчик (ОС на C и NASM). Мы разрабатываем 32-битную учебную ОС MiniCat OS.Стек: GCC (-m32, -ffreestanding), NASM (elf32), QEMU.Текущий статус проекта:Ядро: Multiboot, GDT, IDT (int 0x30 syscalls DPL=3), PMM (Bitmap), kmalloc, RTC, PS/2 Keyboard (с поддержкой Shift).Дисковая подсистема: IDE драйвер (LBA28). Реализован гигантский диск 100 ГБ (100 GiB), отформатированный в FAT32 (superfloppy mode, mkfs.fat32 -I).Файловая система: Реализованы функции init, list_root, find, read, create, delete (со шредером/обнулением кластеров) и write.Интерфейс: Shell с базовыми командами и запуском бинарников (run [file]).Текущая техническая проблема: При монтировании образа в Linux (AntiX) и записи файла APP.BIN, ядро MiniCat OS видит в первом байте корневого каталога 229 (0xE5) (метка удаления), хотя файл был записан с sync.Логи отладки последнего запуска на 100 ГБ диске:data_start_sector: 51264sectors_per_cluster: 64root_cluster: 2root_lba: 51264signature: 0x55AA (OK)FS Type: FAT32 (OK)Задача на следующую сессию:Выяснить причину рассинхронизации адресов между Linux и ядром на дисках > 32 ГБ (проверка расчета data_start_sector и возможных скрытых секторов).Проверить работоспособность fat32_write_file через системный вызов №7.Перейти к реализации инсталлятора системы на диск или многозадачности.Инструкция для ИИ: Продолжай в лаконичном стиле, предлагай конкретные правки в код. Начни с анализа того, почему на 100 ГБ диске root_lba может указывать на удаленную запись, когда Linux видит её как живую.
-*/
+//Промт для продолжения разработки:
+//«Я разрабатываю 32-битную многозадачную ОС (MiniCat OS) на C и ASM под архитектуру x86. На текущий момент реализовано:
+//Планировщик: Вытесняющая многозадачность в Ring 0 на основе IRQ0 (таймер PIT). Кольцевой список задач (task_t).
+//Менеджер ресурсов: Система регистрации (Resource Tracking) и очистки (Reaper/Жнец) ресурсов процесса (пока только VGA-символы).
+//Файловая система: Чтение/запись FAT32 через собственный IDE-драйвер на прерываниях (IRQ14).
+//Проблема: После добавления полей resources и stack_base в структуру task_t система стала нестабильной (Triple Fault при работе Жнеца или вызове kill). Вероятная причина — рассинхронизация смещений в структуре registers_t или task_t между ASM-заглушками и C-обработчиком.
+//Текущее состояние структуры registers_t: включает сегменты, pushad, int_no/err_code и eip/cs/eflags.
+//Текущий контекст: Жнец (PID 3) успешно ловит «убитые» процессы, но при вызове task_cleanup или kfree_page происходит перезагрузка.
+//Задача для новой сессии:
+//Проверить соответствие common_stub (ASM) и registers_t (C).
+//Наладить стабильную очистку памяти стека через kfree_page без падения в Triple Fault.
+//Проверить выравнивание стека в create_task.»
+//Совет напоследок: Перед следующим запуском попробуй просто ради эксперимента в create_task добавить в самый конец структуры task_t поле uint32_t magic; и проверять его в планировщике. Если магия «пропадает» — значит, где-то в коде происходит переполнение стека (Stack Overflow), которое затирает структуру задачи.

@@ -12,6 +12,7 @@ void vga_putc(char c);
 void vga_puts(const char* str);
 void vga_clear();
 void vga_put_int(uint32_t num);
+void vga_put_hex(uint32_t n);
 
 #endif
 

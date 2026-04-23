@@ -83,3 +83,14 @@ void vga_put_int(uint32_t num) {
 
     vga_puts(&buf[i + 1]);
 }
+
+void vga_put_hex(uint32_t n) {
+    const char *hex_chars = "0123456789ABCDEF";
+    vga_puts("0x");
+    
+    // Проходим по 4 бита (одна шестнадцатеричная цифра) сверху вниз
+    for (int i = 28; i >= 0; i -= 4) {
+        uint8_t nibble = (n >> i) & 0x0F;
+        vga_putc(hex_chars[nibble]);
+    }
+}

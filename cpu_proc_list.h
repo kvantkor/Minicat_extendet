@@ -2,5 +2,6 @@
 #define CPU_PROC_LIST_H
 
 task_t* create_task(void (*entry_point)(), uint32_t pdir, const char* name);
+void shell_kill_proc(int pid);
 
 #endif
