@@ -3,6 +3,12 @@
 #include "vga.h"
 #include <stdint.h>
 
+/*
+ * файл драйвера иде контроллера
+ * функция ожидания готовности иде контроллера
+ * функция чтения сектора
+ * функция записи в сектор
+*/
 volatile uint8_t ide_irq_fired = 0;
 
 // Порты контроллера IDE
@@ -15,12 +21,14 @@ volatile uint8_t ide_irq_fired = 0;
 #define IDE_COMMAND     0x1F7
 #define IDE_STATUS      0x1F7
 
+//функция задержки
 static void ide_delay() {
     // 4 чтения порта статуса дают задержку ~400нс
     inb(IDE_STATUS); inb(IDE_STATUS);
     inb(IDE_STATUS); inb(IDE_STATUS);
 }
 
+// функция ожидания готовности иде контроллера
 int ide_wait_ready(uint8_t check_drq) {
     uint8_t status;
     while (1) {
@@ -34,8 +42,9 @@ int ide_wait_ready(uint8_t check_drq) {
     }
 }
 
+//функция чтения сектора
 void ide_read_sector(uint32_t lba, uint8_t* buffer) {
-    ide_wait_ready(0); // Ждем через 0x3F6 (исправь функцию выше)
+    ide_wait_ready(0); // Ждем через 0x3F6 
     ide_irq_fired = 0;
 
     outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
@@ -66,6 +75,7 @@ void ide_read_sector(uint32_t lba, uint8_t* buffer) {
     inb(0x1F7);
 }
 
+//функция записи в сектор
 void ide_write_sector(uint32_t lba, uint8_t* buffer) {
     if(ide_wait_ready(0) < 0) return;
     

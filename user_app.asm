@@ -1,29 +1,36 @@
 [bits 32]
-org 0x300000
+; Адрес, по которому ядро загрузит и начнет выполнять программу
+[org 0x00404000] 
 
 start:
-    ; --- ШАГ 1: Создаем файл ---
-    mov eax, 5          ; Syscall: create_file
-    mov ebx, filename   ; "TEST.TXT"
-    int 0x30
-    
-    ; --- ШАГ 2: Записываем данные в файл ---
-    mov eax, 7          ; Syscall: write_file
-    mov ebx, filename   ; Имя файла
-    mov ecx, file_data  ; Что пишем
-    mov edx, data_len   ; Сколько байт (19)
-    int 0x30
-    
-    ; --- ШАГ 3: Проверяем результат (принт сообщения) ---
-    mov eax, 1          ; Syscall: print
-    mov ebx, msg_done
-    int 0x30
+    mov edi, 0xB8000 + 148  ; 78-я колонка (рядом с твоей первой программой)
+    mov bl, 33              ; Начинаем с символа '!' (ASCII 33)
+    mov al, 0x01            ; Начальный цвет (синий на черном)
 
-    ret
+main_loop:
+    ; 1. Рисуем текущий символ и цвет
+    mov [edi], bl
+    mov [edi+1], al
 
-section .data
-filename  db "TEST.TXT", 0
-file_data db "Hello from ASM App!", 0
-data_len  equ $ - file_data
+    ; 2. Задержка
+    mov ecx, 0x2000000
+delay:
+    loop delay
 
-msg_done  db 0x0A, "Process finished. Type 'cat TEST.TXT' in shell.", 0x0A, 0
+    ; 3. Логика изменения символа
+    inc bl                  ; Переходим к следующему символу ASCII
+    cmp bl, 126             ; Дошли до конца печатных символов?
+    jl skip_char_reset
+    mov bl, 33              ; Сброс на '!'
+skip_char_reset:
+
+    ; 4. Логика изменения цвета
+    inc al                  ; Следующий цвет
+    test al, 0x0F           ; Проверяем, не стал ли цвет текста черным (0)
+    jnz skip_color_fix
+    inc al                  ; Пропускаем черный цвет, чтобы букву было видно
+skip_color_fix:
+    and al, 0x0F            ; Оставляем только младшие 4 бита (цвет фона черный)
+
+    jmp main_loop
+

@@ -4,6 +4,10 @@
 #define CMOS_ADDR 0x70
 #define CMOS_DATA 0x71
 
+/*
+ * это файл драйвера rtc
+ * функция получения времени из rtc
+*/
 static int is_updating() {
     outb(CMOS_ADDR, 0x0A);
     return (inb(CMOS_DATA) & 0x80);
@@ -19,7 +23,7 @@ static int bcd_to_bin(uint8_t bcd) {
     return ((bcd >> 4) * 10) + (bcd & 0x0F);
 }
 
-
+// функция получения времени из rtc
 void rtc_get_time(int *h, int *m, int *s) {
     // Ждем окончания обновления, чтобы не прочитать "переключающиеся" цифры
     while (is_updating());

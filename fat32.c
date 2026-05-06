@@ -3,6 +3,23 @@
 #include "vga.h"
 #include "shell.h"
 
+/*
+ * это файл драйвера фат32
+ * инит. фат32 драйвера
+ * очистка кластера
+ * функция очистки кластеров
+ * функция получения следующего кластера
+ * функция вывода списка файлов на диске
+ * функция записи в файл
+ * функция поиска свободного кластера
+ * функция удаления файла
+ * функция подготовки имени файла к 8.3
+ * функция создания файла
+ * функция регистрации кластера в таблице фат
+ * функция записи в файл
+ * функция обновления информации о файле в структуре каталога
+*/
+
 // Глобальные переменные для работы с ФС
 static uint32_t data_start_sector;
 static uint32_t reserved_sectors;
@@ -12,10 +29,14 @@ static uint32_t root_cluster;
 static uint32_t last_alloc_cluster = 2; // Храним последний выданный кластер
 static uint32_t partition_lba_start = 0; // Смещение раздела
 
+//перевод адреса
 uint32_t cluster_to_lba(uint32_t cluster);
+//чтение цепочки
 void fat32_set_cluster_value(uint32_t cluster, uint32_t value);
+//запись
 uint32_t fat32_get_next_cluster(uint32_t current_cluster);
 
+//инициализация драйвера фат32
 void fat32_init() {
     uint8_t buf[512];
     
@@ -57,6 +78,7 @@ void fat32_init() {
     vga_puts("\n");
 }
 
+//очистка цепочки кластеров
 void fat32_free_chain(uint32_t cluster) {
 	uint8_t zero_buf[512];
 	
@@ -96,6 +118,7 @@ uint32_t fat32_get_next_cluster(uint32_t current_cluster) {
     return (next >= 0x0FFFFFF8) ? 0 : next; 
 }
 
+//функция вывода на экран находящихся файлов на диске
 void fat32_list_root() {
     uint8_t buf[512];
     uint32_t current_cluster = root_cluster;
@@ -185,6 +208,7 @@ static int fat32_name_match(const char* input, uint8_t* entry_name, uint8_t* ent
     return (*a == '\0' && *b == '\0');
 }
 
+// поиск файла
 uint32_t fat32_find_file(const char* filename) {
     uint8_t buf[512];
     uint32_t current_cluster = root_cluster;
@@ -211,6 +235,7 @@ uint32_t fat32_find_file(const char* filename) {
     return 0; // Не нашли
 }
 
+// запись в файл
 void fat32_read_file(uint32_t cluster, uint8_t* target_buffer) {
     uint32_t current_cluster = cluster;
     uint32_t offset = 0;
@@ -228,6 +253,7 @@ void fat32_read_file(uint32_t cluster, uint8_t* target_buffer) {
     }
 }
 
+// поиск свободного кластера
 uint32_t fat32_find_free_cluster() {
     uint8_t fat_buf[512];
     
@@ -253,6 +279,7 @@ uint32_t fat32_find_free_cluster() {
     return 0; 
 }
 
+// удаление файла
 int fat32_delete_file(const char* filename) {
     // 1. Защита системных файлов
     if (_strcmp(filename, "KERNEL.BIN") == 0 || _strcmp(filename, "BOOT.ASM") == 0) {
@@ -294,6 +321,7 @@ int fat32_delete_file(const char* filename) {
     return -1;
 }
 
+// подготовка имени файла к 8.3
 void format_name_to_83(const char* src, uint8_t* dest) {
     // Заполняем всё пробелами (ASCII 0x20)
     for (int i = 0; i < 11; i++) dest[i] = 0x20;
@@ -319,6 +347,7 @@ void format_name_to_83(const char* src, uint8_t* dest) {
     }
 }
 
+// создание файла
 int fat32_create_file(const char* filename) {
     uint8_t buf[512];
     uint8_t name83[11];
@@ -365,6 +394,7 @@ int fat32_create_file(const char* filename) {
     return -1;
 }
 
+// регистрация кластера в таблице фат
 void fat32_set_cluster_value(uint32_t cluster, uint32_t value) {
     uint8_t fat_buf[512];
     uint32_t fat_offset = cluster * 4;
@@ -378,6 +408,7 @@ void fat32_set_cluster_value(uint32_t cluster, uint32_t value) {
 	asm volatile("sti");
 }
 
+//запись в файл 
 int fat32_write_file(const char* filename, uint8_t* data, uint32_t size) {
     uint32_t cluster = fat32_find_file(filename);
     if (cluster == 0) return -1; 
@@ -421,6 +452,7 @@ int fat32_write_file(const char* filename, uint8_t* data, uint32_t size) {
     return 0;
 }
 
+// обновление информации о файле в структуре каталога
 void fat32_update_entry(const char* filename, uint32_t new_size, uint32_t new_cluster) {
     uint8_t buf[512];
     uint32_t current_cluster = root_cluster;

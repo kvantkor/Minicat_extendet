@@ -5,6 +5,18 @@
 #include "fat32.h"
 #include "kernel.h"
 #include "cpu_proc_list.h"
+#include "vmm.h"
+
+/*
+ * это файл драйвера shell
+ * функция сравнения строк
+ * функция инициализации shell
+ * функция выполнения введённой комманды 
+ * функция обработки спец символа
+ * функция сравнения строки с цифрой
+ * функция вывода списка процессов
+ * функция преобразования строки в число
+*/
 
 #define MAX_BUF 128
 static char buffer[MAX_BUF];
@@ -15,18 +27,20 @@ extern void shell_list_procs();
 extern int _atoi(char *s);
 int _strncmp(const char *s1, const char *s2, int n);
 
-// Нам понадобится strcmp, вынеси её в utils.c или оставь здесь как static
+// функция сравнения строк
 int _strcmp(const char *s1, const char *s2) {
     while (*s1 && (*s1 == *s2)) { s1++; s2++; }
     return *(unsigned char *)s1 - *(unsigned char *)s2;
 }
 
+//инициализация оболочки shell
 void shell_init() {
     ptr = 0;
     for(int i=0; i<MAX_BUF; i++) buffer[i] = 0;
     vga_puts("\nMiniCat OS Shell v1.0\n> ");
 }
 
+// функция выполнения вводимой комманды и сопоставления с функциями ядра
 void shell_execute(char* cmd) {
     if (_strcmp(cmd, "help") == 0) {
         vga_puts("Commands: help, cls, mem, hi, time\n");
@@ -68,23 +82,86 @@ void shell_execute(char* cmd) {
         }
 
     } else if (_strncmp(cmd, "run ", 4) == 0) {
-        char* filename = cmd + 4;
-        uint32_t cluster = fat32_find_file(filename);
-        if (cluster == 0) {
-            vga_puts("Binary not found.\n");
-        } else {
-            uint8_t* load_addr = (uint8_t*)0x300000;
-            vga_puts("Loading "); vga_puts(filename); vga_puts("...\n");
-            
-            fat32_read_file(cluster, load_addr);
-            
-            vga_puts("Executing...\n");
-            void (*entry)() = (void (*)())load_addr;
-            entry(); // Запуск
-            
-            vga_puts("\n[Program finished]\n");
+    char* filename = cmd + 4;
+    uint32_t cluster = fat32_find_file(filename);
+
+    if (cluster == 0) {
+        vga_puts("Binary not found.\n");
+    } else {
+        uint8_t* load_addr = (uint8_t*)kmalloc_page();
+        if (load_addr == 0) {
+            vga_puts("Error: Out of memory!\n");
+            return;
         }
+
+        vga_puts("Loading "); vga_puts(filename); vga_puts("...\n");
+        fat32_read_file(cluster, load_addr);
+
+        // --- ВОТ ЗДЕСЬ ВСЕ ПЕРЕМЕННЫЕ УЖЕ ДОСТУПНЫ ---
+        uint32_t kernel_pd = vmm_get_kernel_pd();
+        
+        vga_puts("Binary loaded at: "); vga_put_hex((uint32_t)load_addr); vga_puts("\n");
+        vga_puts("Kernel PD (CR3): "); vga_put_hex(kernel_pd); vga_puts("\n");
+
+        if (kernel_pd == 0) {
+            vga_puts("CRITICAL: vmm_get_kernel_pd() returned 0!\n");
+        }
+
+        task_t* new_proc = create_task((void (*)())load_addr, kernel_pd, filename);
+        
+        if (new_proc) {
+            vga_puts("Process started. PID: "); vga_put_int(new_proc->id);
+            vga_puts(" ESP: "); vga_put_hex(new_proc->esp); vga_puts("\n");
+            
+            // Если хочешь увидеть эти надписи до того, как всё упадет, 
+            // временно раскомментируй строку ниже:
+        } else {
+            vga_puts("Error: Failed to create task.\n");
+            kfree_page(load_addr);
+        }
+    }
+
+
 		
+			//vga_puts("Switching to CR3: "); vga_put_hex(current_task->page_directory);
+			
+			//char* filename = cmd + 4;
+			//uint32_t cluster = fat32_find_file(filename);
+    
+			//if (cluster == 0) {
+			
+				//vga_puts("Binary not found.\n");
+			//} else {
+				//// 1. Выделяем память под код программы
+				//// Используем kmalloc_page, чтобы у программы была своя страница (4КБ)
+				//uint8_t* load_addr = (uint8_t*)kmalloc_page();
+        
+				//if (load_addr == 0) {
+					//vga_puts("Error: Out of memory!\n");
+					//return;
+				//}
+
+			//vga_puts("Loading "); vga_puts(filename); vga_puts("...\n");
+        
+			//// 2. Читаем файл в выделенную память
+			//fat32_read_file(cluster, load_addr);
+        
+			//// 3. Вместо прямого вызова entry(), создаем задачу в планировщике
+			//vga_puts("Starting process...\n");
+			//vga_puts("Switching to CR3: "); vga_put_hex(current_task->page_directory);
+			//while(1) {}
+			//task_t* new_proc = create_task((void (*)())load_addr, vmm_get_kernel_pd(), filename);
+			
+			//if (new_proc) {
+				//vga_puts("Process '"); vga_puts(filename); 
+				//vga_puts("' started with PID: ");
+				//vga_put_int(new_proc->id);
+				//vga_puts("\n");
+			//} else {
+				//vga_puts("Error: Failed to create task.\n");
+				//kfree_page(load_addr); // Если не создали — возвращаем память
+			//}
+		//}
 	} else if (_strncmp(cmd, "create ", 7) == 0) {
         char* filename = cmd + 7;
         if (fat32_create_file(filename) == 0) {
@@ -168,6 +245,7 @@ void shell_execute(char* cmd) {
     vga_puts("> ");
 }
 
+//функция обработки спец символов
 void shell_handle_char(char c) {
     if (c == '\n') {
         vga_putc('\n');
@@ -185,6 +263,7 @@ void shell_handle_char(char c) {
     }
 }
 
+//функция сравнения стоки с цифрой
 int _strncmp(const char *s1, const char *s2, int n) {
     while (n > 0 && *s1 && (*s1 == *s2)) {
         s1++; s2++; n--;
@@ -192,6 +271,7 @@ int _strncmp(const char *s1, const char *s2, int n) {
     return (n == 0) ? 0 : *(unsigned char *)s1 - *(unsigned char *)s2;
 }
 
+//функция вывода списка процессов
 void shell_list_procs() {
     task_t* start = current_task;
     task_t* it = start;
@@ -225,6 +305,7 @@ void shell_list_procs() {
     } while (it != start);
 }
 
+//функция преобразования строки в число
 int _atoi(char *s) {
     int res = 0;
     while (*s >= '0' && *s <= '9') {

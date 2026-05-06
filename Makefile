@@ -1,58 +1,67 @@
+# --- Компиляторы и инструменты ---
 CC = gcc
 AS = nasm
 LD = ld
 
-# Параметры mtools
+# Параметры mtools (пропуск проверки геометрии для ускорения записи на образ)
 export MTOOLS_SKIP_CHECK=1
 
-# Настройки имен
+# --- Настройки проекта ---
 KERNEL = my_os.elf
 ISO = my_os.iso
 ISO_DIR = iso_root
 MSG = "Update MiniCat OS: implementation of FAT32 ls, run and syscalls"
 GITHAB_OUT = /home/rootcat/Desktop/проекты_на_гитхаб/Minicat_extendet
-VER = 1.2.0
+VER = 2.2.0
 
-# Флаги
+# --- Флаги компиляции ---
+# -m32: сборка под 32 бита
+# -ffreestanding: ядро работает без стандартных библиотек C
+# -fno-stack-protector: отключаем защиту стека (ядро еще не умеет её обрабатывать)
+# -nostdlib: не использовать стандартные библиотеки при линковке
 CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -fno-stack-protector -fno-pie -fno-pic -nostdlib -g
 ASFLAGS = -f elf32
+# -T linker.ld: использовать скрипт компоновки для правильного размещения секций
 LDFLAGS = -m elf_i386 -T linker.ld -no-pie
 
-# Объекты ядра
-OBJ = boot.o kernel.o vga.o keyboard.o pmm.o shell.o rtc.o ide.o fat32.o vmm.o cpu_proc_list.o
+# Список объектных файлов, из которых собирается ядро
+OBJ = boot.o kernel.o vga.o keyboard.o pmm.o shell.o rtc.o ide.o fat32.o vmm.o cpu_proc_list.o mboot_info.o
 
-# Настройки QEMU для AMD V140 (Phenom наиболее близок по архитектуре)
-QEMU_FLAGS = -m 1G -cpu phenom -drive format=raw,file=disk.img -display sdl
+# --- Настройки эмулятора QEMU ---
+# -m 1G: выделяем 1 ГБ оперативной памяти
+# -drive: подключаем образ диска с файловой системой FAT32
+# -d int,cpu_reset: логировать прерывания и сбросы процессора для отладки
+QEMU_FLAGS = -m 1G -cpu phenom -drive format=raw,file=disk.img -display sdl -d int,cpu_reset -D qemu.log
 
 .PHONY: all clean run create_iso help git_upload app write_app git_version
 
-# По умолчанию просто собираем ядро
 all: $(KERNEL)
 
-# 1. Помощь
+# Справка по командам сборки
 help:
 	@echo "=== MiniCat OS Build System ==="
 	@echo "make            - Собрать только ядро (elf)"
-	@echo "make run        - Запустить текущий elf в QEMU (AMD V140)"
-	@echo "make create_iso - Собрать ISO и запустить его в QEMU"
-	@echo "make app        - Собрать приложение APP.BIN"
-	@echo "make write_app  - Записать приложение на disk.img"
-	@echo "make git_upload - Очистить мусор и залить в GitHub"
-	@echo "make git_version- Создание новой версии(перед нажатием нужно изменить версию!)"
+	@echo "make run        - Запустить ядро напрямую (через Multiboot)"
+	@echo "make create_iso - Создать загрузочный образ диска (.iso)"
+	@echo "make app        - Собрать пользовательское приложение"
+	@echo "make write_app  - Записать приложение на виртуальный диск"
+	@echo "make git_upload - Выгрузка на гитхаб"
+	@echo "make git_version- Создание версии проекта"
 
-# Сборка ядра
+# Компоновка ядра
 $(KERNEL): $(OBJ)
 	$(LD) $(LDFLAGS) -o $(KERNEL) $(OBJ)
 
+# Правило для компиляции C-файлов
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Сборка ассемблерного кода загрузчика
 boot.o: boot.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-# 2. Создание ISO и запуск
+# Создание загрузочного ISO образа с помощью GRUB
 create_iso: $(KERNEL) write_app
-	@echo "--- Building ISO ---"
 	@mkdir -p $(ISO_DIR)/boot/grub
 	@cp $(KERNEL) $(ISO_DIR)/boot/
 	@echo "set timeout=0" > $(ISO_DIR)/boot/grub/grub.cfg
@@ -63,38 +72,37 @@ create_iso: $(KERNEL) write_app
 	@echo "}" >> $(ISO_DIR)/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) $(ISO_DIR)
 	@rm -rf $(ISO_DIR)
-	@echo "--- Launching ISO in QEMU ---"
 	qemu-system-i386 $(QEMU_FLAGS) -cdrom $(ISO) -boot d
 
-# 3. Обычный запуск (elf)
+# Быстрый запуск ядра без создания ISO
 run: $(KERNEL) write_app
 	qemu-system-i386 $(QEMU_FLAGS) -kernel $(KERNEL)
 
-# Приложение
+# Сборка приложения в "чистый" бинарный код (flat binary)
 app:
 	$(AS) -f bin user_app.asm -o APP.BIN
+	$(AS) -f bin user_app2.asm -o APP2.BIN
 
+# Запись приложения на образ диска (используется mtools)
 write_app: app
 	mcopy -i disk.img -D o APP.BIN ::APP.BIN
+	mcopy -i disk.img -D o APP2.BIN ::APP2.BIN
 
 clean:
 	rm -f *.o $(KERNEL) $(ISO) APP.BIN
 	rm -rf $(ISO_DIR)
 
+# Автоматизация выгрузки в GitHub
 git_upload: clean
-	@echo "--- Копирование файлов в $(GITHAB_OUT) ---"
-	# Создаем папку, если её нет
 	mkdir -p $(GITHAB_OUT)
-	# Копируем всё, кроме папки .git
-	rsync -av --exclude='.git' ./ $(GITHAB_OUT)/
-	@echo "--- Отправка в репозиторий Minicat_extendet ---"
+	rsync -av --exclude=.git --exclude=disk.img --exclude=*.img --exclude=*.iso ./ $(GITHAB_OUT)/
 	cd $(GITHAB_OUT) && \
 	git add . && \
-	git commit -m $(MSG) && \
+	git commit -m '$(MSG)' && \
 	git push origin main
 
+# Создание и отправка тега версии
 git_version: clean
-	@echo "--- Создание тега версии v$(VER) ---"
 	cd $(GITHAB_OUT) && \
 	git tag -a v$(VER) -m "Release version $(VER): $(MSG)" && \
 	git push origin v$(VER)

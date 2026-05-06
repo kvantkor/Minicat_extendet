@@ -1,6 +1,16 @@
 #include "vga.h"
 #include "kernel.h" // Нужен для outb
 
+/*
+ * это файл видеодрайвера 
+ * функция передвижения курсора через порты
+ * функция очистки экрана
+ * функция вывода символа
+ * функция вывода строки 
+ * функция вывода числа
+ * функция вывода числа в hex формате
+*/
+
 static uint16_t* const VIDEO_MEM = (uint16_t*)0xB8000;
 static int cursor_x = 0;
 static int cursor_y = 0;
@@ -14,6 +24,7 @@ void update_cursor() {
     outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
 }
 
+//очистка экрана
 void vga_clear() {
     for (int i = 0; i < 80 * 25; i++) {
         VIDEO_MEM[i] = (VGA_COLOR_WHITE_ON_BLACK << 8) | ' ';
@@ -37,10 +48,15 @@ static void scroll() {
     }
 }
 
+//вывод символа
 void vga_putc(char c) {
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;
+    } else if (c == '\r'){
+		cursor_x = 0;
+		update_cursor();
+		return;
     } else if (c == '\b') {
         if (cursor_x > 0) {
             cursor_x--;
@@ -60,12 +76,14 @@ void vga_putc(char c) {
     update_cursor();
 }
 
+//вывод строки
 void vga_puts(const char* str) {
     for (int i = 0; str[i] != '\0'; i++) {
         vga_putc(str[i]);
     }
 }
 
+// вывод числа
 void vga_put_int(uint32_t num) {
     if (num == 0) {
         vga_putc('0');
@@ -84,6 +102,7 @@ void vga_put_int(uint32_t num) {
     vga_puts(&buf[i + 1]);
 }
 
+//вывод числа в hex формате
 void vga_put_hex(uint32_t n) {
     const char *hex_chars = "0123456789ABCDEF";
     vga_puts("0x");

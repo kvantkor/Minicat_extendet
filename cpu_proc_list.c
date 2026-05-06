@@ -2,7 +2,13 @@
 #include "kernel.h"
 #include "pmm.h"
 #include "vga.h"
+#include "vmm.h"
 
+/* Этот файл отвечает частично за реализацию менеджера процессов
+ * здесь функция создания и удаления процесса
+*/
+
+// функция убийца выставляет метку по которй идёт отличие обычных от убитых
 void shell_kill_proc(int pid) {
     task_t* it = current_task;
     
@@ -21,6 +27,7 @@ void shell_kill_proc(int pid) {
     vga_puts("PID not found.\n");
 }
 
+// создаёт процесс
 task_t* create_task(void (*entry_point)(), uint32_t pdir, const char* name) {
 	task_t *t = (task_t*)kmalloc(sizeof(task_t));
     t->id = next_pid++;
@@ -32,17 +39,19 @@ task_t* create_task(void (*entry_point)(), uint32_t pdir, const char* name) {
     uint32_t stack_mem = (uint32_t)kmalloc_page();
     if (stack_mem == 0) return NULL; // Всегда проверяй на NULL
     t->steck_base = stack_mem; 
+    vmm_map(stack_mem, stack_mem, 0x3); 
 
     // 2. Указатель для настройки стека (начинаем с конца страницы)
-    uint32_t *esp = (uint32_t*)(stack_mem + 4096);
-
+    uint32_t *esp = (uint32_t*)(stack_mem + 4096 - 64);
+	*(--esp) = (uint32_t)task_exit_trap;
     // 3. Копируем имя
     uint32_t i;
     for(i=0; i<19 && name[i] != '\0'; i++) {
         t->name[i] = name[i];
     }
     t->name[i] = '\0';
-
+    
+	//vga_put_hex((uint32_t)entry_point);
     // Формируем структуру registers_t в стеке (снизу вверх для процессора)
     *(--esp) = 0x202;           // eflags (IF=1, прерывания разрешены)
     *(--esp) = 0x08;            // cs (сегмент кода)
@@ -56,13 +65,16 @@ task_t* create_task(void (*entry_point)(), uint32_t pdir, const char* name) {
     
     // 2. СЕГМЕНТЫ (GS, FS, ES, DS)
     // Эти 4 значения восстановят твои команды pop gs, pop fs...
-    *(--esp) = 0x10; // GS
-    *(--esp) = 0x10; // FS
-    *(--esp) = 0x10; // ES
-    *(--esp) = 0x10; // DS
+	*(--esp) = 0x10; // Пойдет в DS
+	*(--esp) = 0x10; // Пойдет в ES
+	*(--esp) = 0x10; // Пойдет в FS
+	*(--esp) = 0x10; // Пойдет в GS
 
     t->esp = (uint32_t)esp;
-
+	
+	//vga_puts("New task ESP: "); vga_put_hex(t->esp);
+	//vga_puts("\n");
+	
     // Вставляем в кольцевой список
     if (current_task == NULL) {
         t->next = t;
