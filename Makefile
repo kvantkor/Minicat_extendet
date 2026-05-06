@@ -12,7 +12,7 @@ ISO = my_os.iso
 ISO_DIR = iso_root
 MSG = "Update MiniCat OS: implementation of FAT32 ls, run and syscalls"
 GITHAB_OUT = /home/rootcat/Desktop/проекты_на_гитхаб/Minicat_extendet
-VER = 2.1.0
+VER = 2.2.0
 
 # --- Флаги компиляции ---
 # -m32: сборка под 32 бита
